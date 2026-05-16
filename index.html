@@ -1,0 +1,813 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Color Slide — Pattern Match</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg-0: #0b0c0f;
+    --bg-1: #121317;
+    --bg-2: #181a20;
+    --line: #23262d;
+    --line-2: #2c3038;
+    --fg: #f3f4f6;
+    --muted: #8b8f99;
+    --muted-2: #6b6f78;
+    --accent: oklch(72% 0.14 70);
+    --c-red:    #ef4444;
+    --c-orange: #f97316;
+    --c-yellow: #facc15;
+    --c-green:  #22c55e;
+    --c-cyan:   #38bdf8;
+    --c-blue:   #3b82f6;
+    --c-purple: #a855f7;
+    --c-pink:   #ec4899;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 700px at 20% -10%, #1a1d24 0%, transparent 60%),
+      radial-gradient(900px 600px at 110% 110%, #161922 0%, transparent 60%),
+      var(--bg-0);
+    color: var(--fg);
+    font-family: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-feature-settings: "ss01", "cv11";
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+  #root { min-height: 100%; }
+  .mono { font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="env,react">
+const { useState, useEffect, useMemo, useRef, useCallback } = React;
+
+/* ---------- color palette ---------- */
+const COLORS = [
+  { id: 1, name: "Red",    hex: "#ef4444", glow: "239,68,68"   },
+  { id: 2, name: "Orange", hex: "#f97316", glow: "249,115,22"  },
+  { id: 3, name: "Yellow", hex: "#facc15", glow: "250,204,21"  },
+  { id: 4, name: "Green",  hex: "#22c55e", glow: "34,197,94"   },
+  { id: 5, name: "Cyan",   hex: "#38bdf8", glow: "56,189,248"  },
+  { id: 6, name: "Blue",   hex: "#3b82f6", glow: "59,130,246"  },
+  { id: 7, name: "Purple", hex: "#a855f7", glow: "168,85,247"  },
+  { id: 8, name: "Pink",   hex: "#ec4899", glow: "236,72,153"  },
+];
+const colorById = (id) => id === 0 ? null : COLORS.find(c => c.id === id);
+
+/* ---------- 8-puzzle helpers ---------- */
+// Board layout indices:
+// 0 1 2
+// 3 4 5
+// 6 7 8
+const idx = (r, c) => r * 3 + c;
+const rc = (i) => [Math.floor(i / 3), i % 3];
+const neighbors = (i) => {
+  const [r, c] = rc(i);
+  const out = [];
+  if (r > 0) out.push(idx(r - 1, c));
+  if (r < 2) out.push(idx(r + 1, c));
+  if (c > 0) out.push(idx(r, c - 1));
+  if (c < 2) out.push(idx(r, c + 1));
+  return out;
+};
+
+// Standard 8-puzzle solvability: an arrangement is solvable iff inversion count is even.
+const isSolvable = (arr) => {
+  const flat = arr.filter(x => x !== 0);
+  let inv = 0;
+  for (let i = 0; i < flat.length; i++)
+    for (let j = i + 1; j < flat.length; j++)
+      if (flat[i] > flat[j]) inv++;
+  return inv % 2 === 0;
+};
+
+const shuffledBoard = () => {
+  // returns an array of 9 ids 0..8 where 0 is the empty slot
+  while (true) {
+    const arr = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    // require solvable AND not already solved AND meaningfully scrambled
+    if (!isSolvable(arr)) continue;
+    if (arr.every((v, i) => v === [1,2,3,4,5,6,7,8,0][i])) continue;
+    return arr;
+  }
+};
+
+// Generate a target pattern. We pick a random permutation of all 9 (incl one empty slot),
+// then verify the start->target is reachable. Since both start and target are full 8-puzzle
+// permutations, reachability is equivalent to having the same parity of inversions
+// (relative to each other). We just pick parity-compatible permutations directly.
+const generateTarget = (current) => {
+  // parity of current arrangement (treating 0 as 0 and ignoring it for inversions)
+  while (true) {
+    const arr = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    // ensure same solvability class as current so it's reachable
+    if (isSolvable(arr) !== isSolvable(current)) continue;
+    // not identical to current
+    if (arr.every((v, i) => v === current[i])) continue;
+    return arr;
+  }
+};
+
+const matches = (a, b) => a.every((v, i) => v === b[i]);
+
+/* ---------- App ---------- */
+function App() {
+  const [target, setTarget] = useState(() => {
+    // initial: solved (1..8, then 0)
+    return [1, 2, 3, 4, 5, 6, 7, 8, 0];
+  });
+  const [board, setBoard] = useState(() => shuffledBoard());
+  const [moves, setMoves] = useState(0);
+  const [seconds, setSeconds] = useState(0);
+  const [running, setRunning] = useState(true);
+  const [won, setWon] = useState(false);
+  const [bestMoves, setBestMoves] = useState(null);
+  const [bestTime, setBestTime] = useState(null);
+  const [round, setRound] = useState(1);
+  const [lastMoved, setLastMoved] = useState(null);
+  const [shake, setShake] = useState(0);
+
+  // Win detection
+  useEffect(() => {
+    if (matches(board, target) && !won) {
+      setWon(true);
+      setRunning(false);
+      setBestMoves((b) => b == null ? moves : Math.min(b, moves));
+      setBestTime((b) => b == null ? seconds : Math.min(b, seconds));
+    }
+  }, [board, target]); // eslint-disable-line
+
+  // Timer
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => setSeconds((s) => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [running]);
+
+  const emptyIdx = board.indexOf(0);
+
+  const tryMove = useCallback((i) => {
+    if (won) return;
+    if (!neighbors(emptyIdx).includes(i)) {
+      setShake((s) => s + 1);
+      return;
+    }
+    setBoard((prev) => {
+      const next = prev.slice();
+      next[emptyIdx] = prev[i];
+      next[i] = 0;
+      return next;
+    });
+    setMoves((m) => m + 1);
+    setLastMoved(i);
+  }, [emptyIdx, won]);
+
+  // Keyboard controls — arrow keys move a tile *into* the empty slot from the opposite direction
+  useEffect(() => {
+    const onKey = (e) => {
+      const [er, ec] = rc(emptyIdx);
+      let target = null;
+      if (e.key === "ArrowUp")    target = er < 2 ? idx(er + 1, ec) : null;
+      if (e.key === "ArrowDown")  target = er > 0 ? idx(er - 1, ec) : null;
+      if (e.key === "ArrowLeft")  target = ec < 2 ? idx(er, ec + 1) : null;
+      if (e.key === "ArrowRight") target = ec > 0 ? idx(er, ec - 1) : null;
+      if (target != null) {
+        e.preventDefault();
+        tryMove(target);
+      }
+      if (e.key === " " || e.key.toLowerCase() === "g") {
+        e.preventDefault();
+        newRound();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [emptyIdx, tryMove]); // eslint-disable-line
+
+  const newRound = () => {
+    const newBoard = shuffledBoard();
+    const newTarget = generateTarget(newBoard);
+    setBoard(newBoard);
+    setTarget(newTarget);
+    setMoves(0);
+    setSeconds(0);
+    setRunning(true);
+    setWon(false);
+    setLastMoved(null);
+    setRound((r) => r + 1);
+  };
+
+  const resetSame = () => {
+    // reshuffle but keep target
+    let nb;
+    do { nb = shuffledBoard(); } while (matches(nb, target) || isSolvable(nb) !== isSolvable(target));
+    setBoard(nb);
+    setMoves(0);
+    setSeconds(0);
+    setRunning(true);
+    setWon(false);
+    setLastMoved(null);
+  };
+
+  // Progress: how many cells already match target
+  const matchCount = board.reduce((acc, v, i) => acc + (v === target[i] && v !== 0 ? 1 : 0), 0);
+  const progressPct = Math.round((matchCount / 8) * 100);
+
+  return (
+    <div style={layout.page}>
+      <div style={layout.frame}>
+        <Header round={round} />
+        <TopRow
+          target={target}
+          board={board}
+          moves={moves}
+          seconds={seconds}
+          progressPct={progressPct}
+          matchCount={matchCount}
+          onGenerate={newRound}
+          onReset={resetSame}
+          won={won}
+        />
+        <BoardArea
+          board={board}
+          target={target}
+          onTileClick={tryMove}
+          emptyIdx={emptyIdx}
+          lastMoved={lastMoved}
+          shake={shake}
+          won={won}
+        />
+        <Footer bestMoves={bestMoves} bestTime={bestTime} />
+      </div>
+      {won && <WinOverlay moves={moves} seconds={seconds} onNext={newRound} />}
+    </div>
+  );
+}
+
+/* ---------- Header ---------- */
+function Header({ round }) {
+  return (
+    <div style={layout.header}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <Logo />
+        <div>
+          <div style={{ fontWeight: 600, letterSpacing: -0.2, fontSize: 16 }}>Color Slide</div>
+          <div className="mono" style={{ color: "var(--muted)", fontSize: 11, letterSpacing: 0.4, textTransform: "uppercase" }}>
+            Pattern&nbsp;Match&nbsp;·&nbsp;Round&nbsp;{String(round).padStart(2, "0")}
+          </div>
+        </div>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <Kbd>↑</Kbd><Kbd>↓</Kbd><Kbd>←</Kbd><Kbd>→</Kbd>
+        <span style={{ color: "var(--muted-2)", fontSize: 12, marginLeft: 8 }}>to slide</span>
+        <span style={{ width: 1, height: 16, background: "var(--line)", margin: "0 8px" }} />
+        <Kbd>G</Kbd>
+        <span style={{ color: "var(--muted-2)", fontSize: 12, marginLeft: 8 }}>new pattern</span>
+      </div>
+    </div>
+  );
+}
+function Logo() {
+  return (
+    <div style={{
+      width: 32, height: 32, borderRadius: 9,
+      background: "linear-gradient(135deg, #1e2129, #14161b)",
+      border: "1px solid var(--line-2)",
+      display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr",
+      gap: 2, padding: 6,
+    }}>
+      <div style={{ background: "var(--c-red)", borderRadius: 2 }} />
+      <div style={{ background: "var(--c-yellow)", borderRadius: 2 }} />
+      <div style={{ background: "var(--c-blue)", borderRadius: 2 }} />
+      <div style={{ background: "var(--c-green)", borderRadius: 2 }} />
+    </div>
+  );
+}
+function Kbd({ children }) {
+  return (
+    <span className="mono" style={{
+      display: "inline-flex", alignItems: "center", justifyContent: "center",
+      minWidth: 22, height: 22, padding: "0 6px",
+      borderRadius: 5, background: "#1a1c22", border: "1px solid var(--line-2)",
+      color: "var(--muted)", fontSize: 11, fontWeight: 500,
+    }}>{children}</span>
+  );
+}
+
+/* ---------- Top row: pattern, generate, stats ---------- */
+function TopRow({ target, board, moves, seconds, progressPct, matchCount, onGenerate, onReset, won }) {
+  return (
+    <div style={layout.topRow}>
+      <PatternCard target={target} board={board} />
+      <ControlsCard
+        onGenerate={onGenerate}
+        onReset={onReset}
+        moves={moves}
+        seconds={seconds}
+        progressPct={progressPct}
+        matchCount={matchCount}
+        won={won}
+      />
+    </div>
+  );
+}
+
+function PatternCard({ target, board }) {
+  return (
+    <div style={layout.panel}>
+      <CardLabel left="TARGET PATTERN" right="3 × 3" />
+      <div style={{
+        position: "relative",
+        background: "#06070a",
+        borderRadius: 14,
+        padding: 14,
+        border: "1px solid #0e1014",
+        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.02), inset 0 0 30px rgba(0,0,0,0.6)",
+      }}>
+        {/* CRT-like scanline */}
+        <div style={{
+          position: "absolute", inset: 0, pointerEvents: "none", borderRadius: 14,
+          background: "repeating-linear-gradient(0deg, rgba(255,255,255,0.015) 0 1px, transparent 1px 3px)",
+        }} />
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(3, 1fr)",
+          gridTemplateRows: "repeat(3, 1fr)",
+          gap: 8,
+          aspectRatio: "1 / 1",
+          width: 220,
+        }}>
+          {target.map((id, i) => {
+            const c = colorById(id);
+            const isMatched = board[i] === target[i] && id !== 0;
+            return (
+              <div key={i} style={{
+                borderRadius: 8,
+                background: c
+                  ? `linear-gradient(135deg, ${c.hex}, ${c.hex})`
+                  : "transparent",
+                border: c ? `1px solid rgba(255,255,255,0.18)` : "1px dashed rgba(255,255,255,0.08)",
+                boxShadow: c
+                  ? `0 0 0 1px rgba(0,0,0,0.4), 0 0 18px rgba(${c.glow},0.35), inset 0 1px 0 rgba(255,255,255,0.25), inset 0 -8px 12px rgba(0,0,0,0.15)`
+                  : "inset 0 0 12px rgba(0,0,0,0.5)",
+                position: "relative",
+                transition: "transform 220ms ease, box-shadow 220ms ease",
+              }}>
+                {isMatched && (
+                  <div style={{
+                    position: "absolute", inset: 4, borderRadius: 6,
+                    border: "1.5px solid rgba(255,255,255,0.65)",
+                    boxShadow: "0 0 10px rgba(255,255,255,0.5)",
+                  }} />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div className="mono" style={{ fontSize: 11, color: "var(--muted-2)", marginTop: 10, letterSpacing: 0.4 }}>
+        MATCH THIS ↓
+      </div>
+    </div>
+  );
+}
+
+function ControlsCard({ onGenerate, onReset, moves, seconds, progressPct, matchCount, won }) {
+  const mm = String(Math.floor(seconds / 60)).padStart(2, "0");
+  const ss = String(seconds % 60).padStart(2, "0");
+  return (
+    <div style={{ ...layout.panel, flex: 1, display: "flex", flexDirection: "column" }}>
+      <CardLabel left="CONTROLS" right={won ? "SOLVED" : "PLAYING"} rightTone={won ? "ok" : "live"} />
+      <button onClick={onGenerate} style={btn.primary}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+          <DiceIcon />
+          Generate New Pattern
+        </span>
+        <span className="mono" style={{ fontSize: 11, color: "rgba(0,0,0,0.55)", letterSpacing: 0.4 }}>
+          SPACE / G
+        </span>
+      </button>
+      <button onClick={onReset} style={btn.ghost}>
+        <ResetIcon />
+        Re-shuffle tiles
+      </button>
+
+      <div style={{ height: 1, background: "var(--line)", margin: "16px 0 14px" }} />
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+        <Stat label="MOVES" value={String(moves).padStart(2, "0")} />
+        <Stat label="TIME"  value={`${mm}:${ss}`} />
+        <Stat label="MATCH" value={`${matchCount}/8`} />
+      </div>
+
+      <div style={{ marginTop: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+          <span className="mono" style={{ fontSize: 10, color: "var(--muted-2)", letterSpacing: 0.6 }}>PROGRESS</span>
+          <span className="mono" style={{ fontSize: 10, color: "var(--muted)" }}>{progressPct}%</span>
+        </div>
+        <div style={{
+          height: 6, background: "#0f1116", borderRadius: 99,
+          border: "1px solid var(--line)", overflow: "hidden",
+        }}>
+          <div style={{
+            height: "100%",
+            width: `${progressPct}%`,
+            background: progressPct === 100
+              ? "linear-gradient(90deg, #22c55e, #38bdf8)"
+              : "linear-gradient(90deg, #f97316, #ef4444, #ec4899, #a855f7)",
+            transition: "width 320ms cubic-bezier(.2,.7,.2,1)",
+            boxShadow: "0 0 12px rgba(236,72,153,0.4)",
+          }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value }) {
+  return (
+    <div style={{
+      background: "#0f1116", border: "1px solid var(--line)",
+      borderRadius: 10, padding: "10px 12px",
+    }}>
+      <div className="mono" style={{ fontSize: 10, color: "var(--muted-2)", letterSpacing: 0.6, marginBottom: 4 }}>{label}</div>
+      <div className="mono" style={{ fontSize: 20, fontWeight: 500, letterSpacing: -0.2 }}>{value}</div>
+    </div>
+  );
+}
+
+function CardLabel({ left, right, rightTone }) {
+  const dot = rightTone === "ok" ? "var(--c-green)" : rightTone === "live" ? "var(--c-orange)" : "var(--muted-2)";
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+      <span className="mono" style={{ fontSize: 10.5, color: "var(--muted)", letterSpacing: 0.8 }}>{left}</span>
+      <span className="mono" style={{ fontSize: 10.5, color: "var(--muted)", letterSpacing: 0.8, display: "inline-flex", alignItems: "center", gap: 6 }}>
+        {rightTone && <span style={{ width: 6, height: 6, borderRadius: 99, background: dot, boxShadow: `0 0 8px ${dot}` }} />}
+        {right}
+      </span>
+    </div>
+  );
+}
+
+/* ---------- Board ---------- */
+function BoardArea({ board, target, onTileClick, emptyIdx, lastMoved, shake, won }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!ref.current) return;
+    ref.current.animate(
+      [{ transform: "translateX(0)" }, { transform: "translateX(-6px)" }, { transform: "translateX(6px)" }, { transform: "translateX(-3px)" }, { transform: "translateX(0)" }],
+      { duration: 240, easing: "cubic-bezier(.2,.7,.2,1)" }
+    );
+  }, [shake]);
+
+  const movable = new Set(neighbors(emptyIdx));
+
+  return (
+    <div style={layout.boardWrap}>
+      <CardLabel left="YOUR BOARD" right={won ? "MATCHED ✓" : "TAP A TILE TO SLIDE"} rightTone={won ? "ok" : null} />
+      <div ref={ref} style={{
+        position: "relative",
+        background: "linear-gradient(180deg, #0f1116 0%, #0a0b0f 100%)",
+        border: "1px solid var(--line)",
+        borderRadius: 18,
+        padding: 14,
+        boxShadow: "0 30px 80px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.03)",
+      }}>
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(3, 1fr)",
+          gridTemplateRows: "repeat(3, 1fr)",
+          gap: 10,
+          width: 320,
+          height: 320,
+        }}>
+          {board.map((id, i) => (
+            <Tile
+              key={`slot-${i}`}
+              id={id}
+              slot={i}
+              movable={movable.has(i)}
+              correct={id !== 0 && id === target[i]}
+              isLast={lastMoved === i}
+              onClick={() => onTileClick(i)}
+              won={won}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Tile({ id, slot, movable, correct, isLast, onClick, won }) {
+  const c = colorById(id);
+  const [hover, setHover] = useState(false);
+  const [press, setPress] = useState(false);
+
+  if (!c) {
+    // empty slot
+    return (
+      <div style={{
+        borderRadius: 12,
+        background: "radial-gradient(circle at 50% 40%, #0a0b0f 0%, #07080a 70%)",
+        border: "1px dashed #1f222a",
+        boxShadow: "inset 0 6px 16px rgba(0,0,0,0.7), inset 0 -1px 0 rgba(255,255,255,0.02)",
+      }} />
+    );
+  }
+
+  const interactable = movable && !won;
+  const scale = press ? 0.96 : (hover && interactable ? 1.02 : 1);
+  const lift = hover && interactable ? -2 : 0;
+
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => { setHover(false); setPress(false); }}
+      onMouseDown={() => setPress(true)}
+      onMouseUp={() => setPress(false)}
+      style={{
+        all: "unset",
+        cursor: interactable ? "pointer" : "not-allowed",
+        position: "relative",
+        borderRadius: 12,
+        background: `linear-gradient(155deg, ${c.hex} 0%, ${darken(c.hex, 0.18)} 100%)`,
+        boxShadow: `
+          0 0 0 1px rgba(0,0,0,0.5),
+          0 ${6 + (hover ? 4 : 0)}px ${14 + (hover ? 8 : 0)}px rgba(${c.glow}, ${interactable ? 0.35 : 0.15}),
+          inset 0 1px 0 rgba(255,255,255,0.35),
+          inset 0 -6px 10px rgba(0,0,0,0.22)
+        `,
+        transform: `translateY(${lift}px) scale(${scale})`,
+        transition: "transform 160ms cubic-bezier(.2,.7,.2,1), box-shadow 220ms ease, filter 220ms ease",
+        filter: !interactable && !won ? "saturate(0.85) brightness(0.92)" : "none",
+        outline: isLast ? "1.5px solid rgba(255,255,255,0.55)" : "none",
+        outlineOffset: -3,
+        animation: isLast ? "tilePulse 360ms cubic-bezier(.2,.7,.2,1)" : "none",
+      }}
+      aria-label={`${c.name} tile, slot ${slot}`}
+    >
+      {/* inner gloss */}
+      <div style={{
+        position: "absolute", inset: 6, borderRadius: 8,
+        background: `linear-gradient(160deg, rgba(255,255,255,0.18), rgba(255,255,255,0) 55%)`,
+        pointerEvents: "none",
+      }} />
+      {/* recessed center */}
+      <div style={{
+        position: "absolute", inset: 14, borderRadius: 6,
+        boxShadow: "inset 0 2px 6px rgba(0,0,0,0.18), inset 0 -1px 0 rgba(255,255,255,0.18)",
+        pointerEvents: "none",
+      }} />
+      {/* correct indicator */}
+      {correct && (
+        <div style={{
+          position: "absolute", top: 8, right: 8,
+          width: 16, height: 16, borderRadius: 99,
+          background: "rgba(255,255,255,0.9)",
+          display: "grid", placeItems: "center",
+          boxShadow: "0 2px 6px rgba(0,0,0,0.25)",
+        }}>
+          <svg width="9" height="9" viewBox="0 0 10 10"><path d="M1.5 5L4 7.5L8.5 2.5" stroke="#111" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        </div>
+      )}
+      {/* movable hint dot */}
+      {interactable && !correct && (
+        <div style={{
+          position: "absolute", bottom: 8, right: 8,
+          width: 6, height: 6, borderRadius: 99,
+          background: "rgba(255,255,255,0.7)",
+          boxShadow: "0 0 6px rgba(255,255,255,0.7)",
+        }} />
+      )}
+    </button>
+  );
+}
+
+/* ---------- Footer ---------- */
+function Footer({ bestMoves, bestTime }) {
+  const fmt = (n) => n == null ? "—" : n;
+  const fmtT = (n) => {
+    if (n == null) return "—";
+    const mm = String(Math.floor(n / 60)).padStart(2, "0");
+    const ss = String(n % 60).padStart(2, "0");
+    return `${mm}:${ss}`;
+  };
+  return (
+    <div style={layout.footer}>
+      <div className="mono" style={{ color: "var(--muted-2)", fontSize: 11, letterSpacing: 0.6 }}>
+        BEST&nbsp;·&nbsp;<span style={{ color: "var(--muted)" }}>{fmt(bestMoves)} moves</span>
+        &nbsp;·&nbsp;<span style={{ color: "var(--muted)" }}>{fmtT(bestTime)}</span>
+      </div>
+      <div className="mono" style={{ color: "var(--muted-2)", fontSize: 11 }}>
+        v1.0
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Win overlay ---------- */
+function WinOverlay({ moves, seconds, onNext }) {
+  const mm = String(Math.floor(seconds / 60)).padStart(2, "0");
+  const ss = String(seconds % 60).padStart(2, "0");
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 50,
+      display: "grid", placeItems: "center",
+      background: "rgba(6,7,10,0.6)", backdropFilter: "blur(8px)",
+      animation: "fadeIn 280ms ease",
+    }}>
+      <div style={{
+        background: "linear-gradient(180deg, #15171d 0%, #0e1014 100%)",
+        border: "1px solid var(--line-2)",
+        borderRadius: 18,
+        padding: 28,
+        width: 360,
+        boxShadow: "0 40px 100px rgba(0,0,0,0.6)",
+        textAlign: "center",
+        animation: "pop 320ms cubic-bezier(.2,.7,.2,1)",
+      }}>
+        <div style={{
+          width: 56, height: 56, borderRadius: 14,
+          margin: "0 auto 14px",
+          background: "linear-gradient(135deg, #22c55e, #38bdf8)",
+          display: "grid", placeItems: "center",
+          boxShadow: "0 10px 40px rgba(34,197,94,0.4)",
+        }}>
+          <svg width="28" height="28" viewBox="0 0 24 24"><path d="M5 12.5L10 17.5L19 7.5" stroke="white" strokeWidth="2.4" fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        </div>
+        <div style={{ fontSize: 22, fontWeight: 600, letterSpacing: -0.4 }}>Pattern matched</div>
+        <div style={{ color: "var(--muted)", fontSize: 13, marginTop: 6 }}>
+          Nicely done. Ready for another one?
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, margin: "20px 0 18px" }}>
+          <Stat label="MOVES" value={String(moves).padStart(2, "0")} />
+          <Stat label="TIME" value={`${mm}:${ss}`} />
+        </div>
+        <button onClick={onNext} style={{ ...btn.primary, width: "100%", justifyContent: "center" }}>
+          <DiceIcon /> Next Pattern
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- helpers ---------- */
+function darken(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  r = Math.max(0, Math.round(r * (1 - amt)));
+  g = Math.max(0, Math.round(g * (1 - amt)));
+  b = Math.max(0, Math.round(b * (1 - amt)));
+  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, "0")}`;
+}
+
+function DiceIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+      <rect x="3.5" y="3.5" width="17" height="17" rx="4" stroke="currentColor" strokeWidth="1.6"/>
+      <circle cx="8" cy="8" r="1.3" fill="currentColor"/>
+      <circle cx="16" cy="8" r="1.3" fill="currentColor"/>
+      <circle cx="12" cy="12" r="1.3" fill="currentColor"/>
+      <circle cx="8" cy="16" r="1.3" fill="currentColor"/>
+      <circle cx="16" cy="16" r="1.3" fill="currentColor"/>
+    </svg>
+  );
+}
+function ResetIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+      <path d="M4 12a8 8 0 1 0 2.5-5.8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+      <path d="M4 4v4h4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+    </svg>
+  );
+}
+
+/* ---------- styles ---------- */
+const layout = {
+  page: {
+    minHeight: "100%",
+    display: "grid",
+    placeItems: "center",
+    padding: 24,
+  },
+  frame: {
+    width: 760,
+    maxWidth: "100%",
+    background: "linear-gradient(180deg, rgba(20,22,28,0.7) 0%, rgba(14,16,20,0.7) 100%)",
+    border: "1px solid var(--line)",
+    borderRadius: 22,
+    padding: 22,
+    boxShadow: "0 40px 120px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.03)",
+    backdropFilter: "blur(12px)",
+  },
+  header: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 18,
+  },
+  topRow: {
+    display: "grid",
+    gridTemplateColumns: "auto 1fr",
+    gap: 14,
+    marginBottom: 14,
+  },
+  panel: {
+    background: "linear-gradient(180deg, #15171d 0%, #11131a 100%)",
+    border: "1px solid var(--line)",
+    borderRadius: 16,
+    padding: 16,
+  },
+  boardWrap: {
+    background: "linear-gradient(180deg, #15171d 0%, #11131a 100%)",
+    border: "1px solid var(--line)",
+    borderRadius: 16,
+    padding: 16,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+  },
+  footer: {
+    display: "flex", justifyContent: "space-between", alignItems: "center",
+    marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--line)",
+  },
+};
+
+const btn = {
+  primary: {
+    all: "unset",
+    cursor: "pointer",
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    gap: 12,
+    width: "100%",
+    padding: "12px 14px",
+    background: "linear-gradient(180deg, #f5f6f8 0%, #d8dae0 100%)",
+    color: "#0c0d10",
+    border: "1px solid rgba(255,255,255,0.6)",
+    borderRadius: 12,
+    fontWeight: 600,
+    fontSize: 14,
+    letterSpacing: -0.1,
+    boxShadow: "0 8px 24px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.7)",
+    transition: "transform 120ms ease, filter 120ms ease",
+  },
+  ghost: {
+    all: "unset",
+    cursor: "pointer",
+    display: "flex", alignItems: "center", gap: 8,
+    width: "100%",
+    padding: "10px 14px",
+    marginTop: 8,
+    background: "#0f1116",
+    color: "var(--muted)",
+    border: "1px solid var(--line)",
+    borderRadius: 10,
+    fontSize: 13,
+    fontWeight: 500,
+    transition: "background 120ms ease, color 120ms ease",
+  },
+};
+
+/* keyframes */
+const styleEl = document.createElement("style");
+styleEl.textContent = `
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes pop { 0% { transform: scale(.94); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+  @keyframes tilePulse {
+    0%   { box-shadow: 0 0 0 1px rgba(0,0,0,0.5), 0 0 0 0 rgba(255,255,255,0.6), inset 0 1px 0 rgba(255,255,255,0.35), inset 0 -6px 10px rgba(0,0,0,0.22); }
+    60%  { box-shadow: 0 0 0 1px rgba(0,0,0,0.5), 0 0 0 10px rgba(255,255,255,0), inset 0 1px 0 rgba(255,255,255,0.35), inset 0 -6px 10px rgba(0,0,0,0.22); }
+  }
+  button:hover { filter: brightness(1.04); }
+  button:active { transform: translateY(1px); }
+`;
+document.head.appendChild(styleEl);
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
